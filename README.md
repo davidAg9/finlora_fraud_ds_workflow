@@ -47,4 +47,9 @@ cd ../api && MODEL_URI="models:/finlora-fraud-detector@best" \
 cd ../ds_workflow && pixi run streamlit run ../app_streamlit/app.py
 ```
 
-DagsHub hosts the mirror: experiments, `finlora-fraud-detector` v1–v5 (← local v9/10/11/12/15), ONNX twins, model cards, drift runs.
+DagsHub hosts the mirror: experiments, `finlora-fraud-detector` v1–v5 (← local v9/10/11/12/15, `@best` → v5), ONNX twins, per-version cards, SHAP artifacts, P/R/F1 @0.80, drift runs, DVC data.
+
+```bash
+# Docker (API + ONNX; model + data mounted, never baked)
+docker build -t finlora-api ./api
+```

@@ -1,0 +1,4 @@
+[core]
+    remote = origin
+['remote "origin"']
+    url = https://dagshub.com/davidAg9/finlora_fraud_ds_workflow.dvc

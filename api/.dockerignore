@@ -1,0 +1,6 @@
+# Build cache + local runtime files never enter the image context.
+target/
+txn_log.jsonl
+models/
+.env
+.env.*
