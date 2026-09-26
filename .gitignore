@@ -16,3 +16,6 @@ catboost_info/
 
 # macOS noise
 .DS_Store
+
+#credentials
+.env
