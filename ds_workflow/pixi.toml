@@ -1,0 +1,30 @@
+[workspace]
+authors = ["davidAg9 <davidagyakwa@protonmail.com>"]
+channels = ["conda-forge"]
+name = "finlora-fraud"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+matplotlib = ">=3.11.2,<4"
+pandas = ">=3.0.6,<4"
+numpy = ">=2.5.3,<3"
+scikit-learn = ">=1.9.1,<2"
+seaborn = ">=0.13.2,<0.14"
+ipykernel = ">=7.3.0,<8"
+catboost = ">=1.2.10,<2"
+mlflow = ">=3.16.0,<4"
+xgboost = ">=3.4.2,<4"
+shap = ">=0.52.0,<0.53"
+pyarrow = ">=25.0.0,<26"
+lightgbm = ">=4.7.0,<5"
+onnx = ">=1.18,<2"
+onnxruntime = ">=1.19,<2"
+skl2onnx = ">=1.17,<2"
+nbconvert = ">=7.17.1,<8"
+dvc = ">=3,<4"
+
+[pypi-dependencies]
+dagshub = ">=0.7.2, <0.8"

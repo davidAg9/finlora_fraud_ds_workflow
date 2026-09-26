@@ -1,0 +1,18 @@
+# MLflow tracking store + artifacts (lives in the registry, never in git)
+ds_workflow/mlruns/
+ds_workflow/notebooks/mlruns/
+
+# pixi environments (recreated with `pixi install`)
+ds_workflow/.pixi/
+
+# Rust build output
+api/target/
+
+# Python noise
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+catboost_info/
+
+# macOS noise
+.DS_Store
