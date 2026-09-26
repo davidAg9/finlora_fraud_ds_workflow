@@ -3,7 +3,7 @@
 I trained this model on past transactions and tested it on future ones, so the
 scores below reflect how it behaves on data it has never seen.
 
-**My pick:** RF-convertible (RandomForest, fully ONNX-bakeable) | **I flag fraud at:** 0.80 | **mlflow run:** 4144e624e86d433b9eb400c151c54578
+**My pick:** RF-convertible (RandomForest, fully ONNX-bakeable) | **I flag fraud at:** 0.80 | **mlflow run:** 979a9ea66d8b452b8118a6eecbac61a3
 
 ## How each model scored on my future holdout
 | model | ROC-AUC | PR-AUC |

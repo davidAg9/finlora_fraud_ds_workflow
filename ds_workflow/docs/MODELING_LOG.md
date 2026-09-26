@@ -139,9 +139,11 @@ receives. Corrected ranking (mean |SHAP|):
 
 ## Where this left me
 
-A registered, explainable, leak-checked model (currently version 12,
+A registered, explainable, leak-checked model (currently version 15,
 RF-convertible behind the `@best` alias — Logistic still holds the pure-score
 crown at 0.9652 vs 0.9628, and I took that −0.0024 trade deliberately for a
 fully self-contained artifact). Served two ways from one MLflow run: raw-row →
 probability for Python callers, full raw→proba ONNX for the Axum API — and a
-Streamlit dashboard still to build on top.
+Streamlit dashboard still to build on top. (I deleted registry v13/v14: two
+interrupted runs registered the pipe but died before exporting ONNX. The runs
+stay in history; the half-versions don't.)
