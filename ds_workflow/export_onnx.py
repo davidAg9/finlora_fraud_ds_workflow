@@ -1,79 +1,69 @@
-"""Export the winning FinLora model to ONNX for the axum/ort API.
+"""Export the registered FinLora model to ONNX for the axum/ort API.
 
-Why ONNX at all: the axum service is Rust, and Rust can't run sklearn — it can
-only run ONNX. So I split the pipeline in two: the Python-side feature math
-(log1p, one-hot, missing-value handling) stays in Python (Streamlit/the baked
-MLflow model), and only the trained estimator chain (imputer -> scaler ->
-logistic) goes into the ONNX graph. The axum service receives the 49 engineered
-features (frozen order in model/finlora_feature_schema.json) as a [1, 49] float
-tensor. This script:
+Why this file exists separately (not a notebook cell): exporting is a build
+step, not an experiment. Docker/CI runs `python export_onnx.py` with no
+notebook involved — and it must convert the EXACT artifact I evaluated and
+registered, not a retrain that merely hopes to match it.
 
-  1. retrains the winner from finlora_modeling.ipynb (same data, same temporal
-     split, same feature contract via features.py),
-  2. takes the fitted estimator steps,
-  3. exports them to model/fl_fraud_model_v0.1.0 (fetched by the axum API from
-     MLflow, which also stores a copy under onnx/ in the run),
-  4. verifies sklearn vs onnxruntime parity on the test split (must agree 100%
-     on fraud/not-fraud decisions, else I stop and investigate).
+Why ONNX at all: the axum service is Rust, and Rust can't run sklearn — only
+ONNX. So I split the pipeline in two. The Python-side feature math (my derived
+flags, dtype cleanup, log1p, one-hot) stays in Python and inside the MLflow
+model; only the trained estimator chain (imputer -> scaler -> logistic) goes
+into the ONNX graph. The axum service receives the 49 engineered features
+(frozen order in model/finlora_feature_schema.json) as a [1, 49] float tensor.
 
-Run from ds_workflow/:  python export_onnx.py
+Steps:
+  1. load the baked pipeline from the registry (default: version 10),
+  2. slice off everything up to and including the "prep" step,
+  3. convert that estimator tail to model/fl_fraud_model_v0.1.0,
+  4. verify sklearn vs onnxruntime parity on the test split (100% decision
+     agreement required — anything less and I stop and investigate).
+
+Usage (from ds_workflow/):
+    python export_onnx.py                    # exports version 10 (MODEL_VERSION)
+    MODEL_VERSION=best python export_onnx.py  # or: follow the best alias
+    MLFLOW_TRACKING_URI=... python export_onnx.py  # or: export from DagsHub
 """
 
 import os
-import sys
 
+import mlflow
 import numpy as np
 import pandas as pd
+from sklearn.pipeline import Pipeline
 
-sys.path.insert(0, os.path.abspath("."))
-from features import ALL_FEATURE_COLS, derive_features, make_preprocessor, prepare_features
+from features import RAW_FEATURE_COLS
 
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "10")
 MODEL_PATH = os.path.join("model", "fl_fraud_model_v0.1.0")
 TEST_THRESHOLD = 0.80
+EXPECTED_FEATURES = 49
 
+tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+if not tracking_uri:
+    tracking_uri = "sqlite:///" + os.path.abspath("mlruns/mlruns.db")
+mlflow.set_tracking_uri(tracking_uri)
+
+# The exact artifact I evaluated — same run, same weights, no retrain.
+pipe = mlflow.sklearn.load_model(f"models:/finlora-fraud-detector/{MODEL_VERSION}")
+step_names = [name for name, _ in pipe.steps]
+print(f"registered pipeline steps: {step_names}")
+prep_at = step_names.index("prep")
+export_pipe = Pipeline(pipe.steps[prep_at + 1:])
+print(f"exporting estimator tail: {[n for n, _ in export_pipe.steps]}")
+
+# Engineered test matrix, built with the pipeline's OWN fitted steps —
+# so the parity check below compares onnxruntime against this exact model.
 df = pd.read_parquet("data_assets/cleaned/finlora_cleaned.parquet")
 df = df.sort_values("timestamp")
 cut = int(len(df) * 0.8)
-
-train = df.iloc[:cut]
-test = df.iloc[cut:]
-
-X_train = prepare_features(derive_features(train)[ALL_FEATURE_COLS])
-y_train = train["is_fraud"]
-X_test = prepare_features(derive_features(test)[ALL_FEATURE_COLS])
-y_test = test["is_fraud"]
-
-preprocessor, ALL_FEATURE_COLS = make_preprocessor()
-preprocessor.fit(X_train)
-
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-
-pos = int((y_train == 1).sum())
-neg = int((y_train == 0).sum())
-
-best_pipe = Pipeline(
-    [
-        ("prep", preprocessor),
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
-        ("lr", LogisticRegression(max_iter=2000, class_weight="balanced")),
-    ]
-)
-best_pipe.fit(X_train, y_train)
-
-n_features = len(ALL_FEATURE_COLS)
-print(f"raw input features: {n_features}")
-
-# Trained estimator chain only — preprocessor stays in Python.
-export_pipe = Pipeline(best_pipe.steps[1:])
-Xe_test = preprocessor.transform(X_test).astype(np.float32)
+X_raw_test = df.iloc[cut:][RAW_FEATURE_COLS]
+prep = pipe.named_steps["prep"]
+Xe_test = prep.transform(pipe.named_steps["raw"].transform(X_raw_test)).astype(np.float32)
 
 n_features = Xe_test.shape[1]
-if n_features != 49:
-    raise SystemExit(f"engineered feature count mismatch: {n_features} != 49")
+if n_features != EXPECTED_FEATURES:
+    raise SystemExit(f"engineered feature count mismatch: {n_features} != {EXPECTED_FEATURES}")
 print(f"engineered features: {n_features}")
 
 print("converting to ONNX ...")
