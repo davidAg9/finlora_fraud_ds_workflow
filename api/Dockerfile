@@ -20,7 +20,19 @@
 #     -v ./ds_workflow/model:/model:ro \
 #     finlora-api
 
-FROM rust:1.90-slim-bookworm AS builder
+# trixie (not bookworm): the prebuilt onnxruntime static libs ort downloads
+# were compiled against GCC 13+ headers (_M_replace_cold et al.) — bookworm's
+# GCC-12 libstdc++ links nothing and the build dies in undefined references.
+# Verified with nm before switching; the runtime stage must match for the
+# same reason (dynamic libstdc++ at container boot).
+FROM rust:1.90-slim-trixie AS builder
+# build-essential (C++ linker for aws-lc, pulled in by reqwest's TLS),
+# pkg-config + OpenSSL headers (reqwest links OpenSSL at compile time).
+# Found both the hard way, one failed docker build at a time.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists
 WORKDIR /build
 # Dependency layer first: rebuilding after a source edit reuses this cache.
 COPY Cargo.toml Cargo.lock ./
@@ -29,14 +41,19 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs \
     && cargo build --release \
     && rm -rf src
 COPY src ./src
-RUN cargo build --release
+# touch: my sources are days older than the stub build's fingerprints, so
+# without this cargo calls everything "fresh" and ships the STUB binary
+# (ask me how I know — a 449KB server that exits in 48ms). Touching forces
+# a real rebuild of the actual code.
+RUN find src -type f -exec touch {} + && cargo build --release
 
-FROM debian:bookworm-slim
-# ca-certificates: DagsHub/API calls are HTTPS. libgomp1: the prebuilt
-# onnxruntime dylib ort downloads at compile time links against it — without
-# this the binary dies on startup with a missing-library error.
+FROM debian:trixie-slim
+# ca-certificates: DagsHub/API calls are HTTPS. libssl3: reqwest's TLS at
+# runtime. libgomp1: the prebuilt onnxruntime dylib ort downloads at compile
+# time links against it — without this the binary dies on startup with a
+# missing-library error.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libgomp1 \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 libgomp1 \
     && rm -rf /var/lib/apt/lists
 COPY --from=builder /build/target/release/finlora-api /usr/local/bin/finlora-api
 EXPOSE 8000

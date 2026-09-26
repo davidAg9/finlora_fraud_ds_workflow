@@ -35,8 +35,13 @@ def api_post(path, payload):
         return json.load(r)
 
 try:
-    api_get("/health")
-    st.sidebar.success("API reachable")
+    # /health returns plain text, not JSON — so I read the body raw instead
+    # of api_get(). (This exact mistake once showed a scary red "Expecting
+    # value" box while the API was perfectly healthy. Lesson kept.)
+    with urllib.request.urlopen(f"{api_url}/health", timeout=10) as r:
+        body = r.read().decode()[:60]
+        assert r.status == 200
+    st.sidebar.success(f"API reachable ({body})")
 except Exception as e:  # noqa: BLE001 — I show the error, not the traceback
     st.sidebar.error(f"API unreachable: {e}")
     st.stop()
