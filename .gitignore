@@ -19,3 +19,6 @@ catboost_info/
 
 #credentials
 .env
+# runtime data (request logs, never commit)
+api/txn_log.jsonl
+txn_log.jsonl
