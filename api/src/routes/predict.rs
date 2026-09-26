@@ -124,6 +124,17 @@ pub async fn prediction_handler(
     let confidence = (probability - HUMAN_CONFIRM_LOWER_BOUND).abs() * 2.0;
     let confidence = confidence.min(1.0);
 
+    // Production log for drift monitoring: raw fields + answer, one JSON line.
+    // Best-effort on purpose — a logging failure must never fail a prediction.
+    let mut logged = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
+    if let Some(obj) = logged.as_object_mut() {
+        obj.insert("probability".to_string(), serde_json::json!(probability));
+        obj.insert("is_fraud".to_string(), serde_json::json!(is_fraud));
+    }
+    if let Err(e) = state.txn_log.log(&logged.to_string()) {
+        eprintln!("txn log write failed (serving continues): {e}");
+    }
+
     Ok(Json(PredictionResponse {
         confidence,
         probability,

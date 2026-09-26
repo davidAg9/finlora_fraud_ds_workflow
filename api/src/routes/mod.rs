@@ -1,5 +1,6 @@
 pub mod constants;
 pub mod customers;
+pub mod drift;
 pub mod health;
 pub mod predict;
 
@@ -30,5 +31,6 @@ pub fn create_router(state: AppState) -> Router {
             &constants::CUSTOMER_ROUTE,
             get(customers::get_customer),
         )
+        .route(&constants::DRIFT_ROUTE, get(drift::drift_report))
         .with_state(state)
 }

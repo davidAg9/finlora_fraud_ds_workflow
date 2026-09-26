@@ -3,6 +3,7 @@ mod model;
 mod model_source;
 mod routes;
 mod state;
+mod txnlog;
 
 use ort::session::Session;
 use state::AppState;
@@ -42,10 +43,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session = load_session(&resolved.bytes, &resolved.description)?;
     let customers = load_customers()?;
 
+    let log_path =
+        std::env::var("TXN_LOG_PATH").unwrap_or_else(|_| "txn_log.jsonl".to_string());
+    let txn_log = Arc::new(
+        txnlog::TxnLogger::open(&log_path).map_err(|e| format!("txn log: {e}"))?,
+    );
+    println!("Transaction log -> {log_path}");
+
+    // Monitoring is optional: boot and serve even when no baseline exists.
+    let baseline_path = std::env::var("DRIFT_BASELINE_PATH").unwrap_or_else(|_| {
+        "../ds_workflow/model/drift_baseline.json".to_string()
+    });
+    let drift_baseline = match routes::drift::DriftBaseline::load(&baseline_path) {
+        Ok(b) => {
+            println!(
+                "Drift baseline: {} train rows from {baseline_path}",
+                b.n_baseline
+            );
+            Some(Arc::new(b))
+        }
+        Err(e) => {
+            println!("Drift baseline unavailable ({e}) — GET /drift will 503");
+            None
+        }
+    };
+
     let state = AppState {
         model: Arc::new(Mutex::new(session)),
         ledger: Arc::new(ledger::SimulationLedger::new()),
         customers: Arc::new(customers),
+        txn_log,
+        drift_baseline,
     };
 
     let app = routes::create_router(state);

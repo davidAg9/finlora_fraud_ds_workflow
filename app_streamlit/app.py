@@ -12,16 +12,10 @@ Needs: the API up (default http://localhost:8000), e.g.
 """
 
 import json
-import subprocess
-import sys
 import urllib.request
 from datetime import datetime, timezone
-from pathlib import Path
 
 import streamlit as st
-
-ROOT = Path(__file__).resolve().parent.parent   # repo root (finlora-fraud/)
-DS = ROOT / "ds_workflow"                        # drift.py + mlruns live here
 
 st.set_page_config(page_title="FinLora Fraud Demo", layout="wide")
 st.title("FinLora — fraud detection demo")
@@ -154,20 +148,27 @@ if st.session_state.history:
 # ------------------------------------------------------------ drift monitor
 st.divider()
 st.subheader("Drift monitor")
-st.caption("Runs ds_workflow/drift.py (PSI + KS vs the frozen training baseline). "
-           "Python owns MLflow — Rust has no MLflow client, and drift needs "
-           "pandas/scipy anyway — so the dashboard shells out instead of the API.")
+st.caption("GET /drift compares this API's logged traffic against the frozen "
+           "training baseline (PSI per feature). Python owns the deep analysis "
+           "(drift.py: PSI + KS + MLflow logging) — Rust has no MLflow client "
+           "and drift needs pandas/scipy anyway — but the live check is one "
+           "HTTP call, so it works the same from here or Docker.")
 if st.button("Run drift check"):
-    with st.spinner("scoring 21 features against baseline…"):
+    with st.spinner("scoring logged traffic against baseline…"):
         try:
-            proc = subprocess.run(
-                [sys.executable, "drift.py"], cwd=str(DS),
-                capture_output=True, text=True, timeout=300)
-            out = proc.stdout or proc.stderr
-            st.code(out, language="text")
-            if "significant" in out and "0 significant" not in out:
-                st.warning("drift above threshold — see table")
+            r = api_get("/drift")
+            rows = [{"feature": f["feature"], "PSI": round(f["psi"], 4),
+                     "verdict": f["verdict"],
+                     "missing-drift": f["missing_drift"]}
+                    for f in r["features"]]
+            st.caption(f"{r['n_logged']} logged txns vs {r['n_baseline']} baseline rows "
+                       f"— {r['n_moderate']} moderate, {r['n_significant']} significant")
+            st.dataframe(rows, use_container_width=True)
+            if r["n_logged"] == 0:
+                st.info("no traffic logged yet — make some transactions first")
+            elif r["n_significant"]:
+                st.warning("drift above threshold — investigate before trusting scores")
             else:
                 st.success("no significant drift")
         except Exception as e:  # noqa: BLE001
-            st.error(f"drift run failed: {e}")
+            st.error(f"drift check failed: {e}")

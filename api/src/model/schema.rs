@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// training), missing categories become "" (the __missing__ bucket),
 /// missing flags count as false. txn_velocity_* are placeholders the ledger
 /// overwrites whenever customer_id is present.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TransactionData {
     #[serde(default)]
     pub customer_id: Option<String>,

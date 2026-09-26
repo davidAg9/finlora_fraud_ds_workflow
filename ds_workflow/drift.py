@@ -64,10 +64,36 @@ def cut_bins(baseline, k=10):
     return edges
 
 
+def _is_continuous(s):
+    return s.name in FEATURE_COLS_NUM and s.nunique() > 12
+
+
+def midpoint_bins(baseline):
+    """Bin edges for discrete numerics: midpoints between sorted baseline
+    uniques, guarded by infinities. Values never sit on an edge (they're the
+    integers/scores the edges fall between), so float32 vs float64 comparison
+    in the API gives identical bins — no string keys needed anywhere."""
+    u = sorted(float(x) for x in pd.Series(baseline).dropna().unique())
+    if len(u) < 2:
+        return None
+    edges = [float("-inf")] + [(u[i] + u[i + 1]) / 2 for i in range(len(u) - 1)]
+    edges.append(float("inf"))
+    return np.array(edges)
+
+
+def _cat_key(v):
+    """Canonical category key, identical in Python and Rust: bools lowercase.
+    (I match numpy bools too — `np.True_ is True` is False in Python, which
+    silently skipped them the first time I wrote this.)"""
+    if isinstance(v, (bool, np.bool_)):
+        return "true" if bool(v) else "false"
+    return v
+
+
 def psi_cat(baseline, production):
     """PSI over category proportions (missing folded into __missing__)."""
-    eb = baseline.fillna("__missing__").value_counts(normalize=True)
-    ea = production.fillna("__missing__").value_counts(normalize=True)
+    eb = baseline.map(_cat_key).fillna("__missing__").value_counts(normalize=True)
+    ea = production.map(_cat_key).fillna("__missing__").value_counts(normalize=True)
     cats = set(eb.index) | set(ea.index)
     e = _smooth(np.array([eb.get(c, 0.0) for c in cats]))
     a = _smooth(np.array([ea.get(c, 0.0) for c in cats]))
@@ -101,7 +127,9 @@ def main():
     base, prod = df.iloc[:cut], df.iloc[cut:]
     print(f"baseline n={len(base)} (train), comparison n={len(prod)} (test-as-prod-proxy)")
 
-    metrics, baseline_artifact = {}, {"bins": {}, "missing_rate": {}, "n_baseline": len(base)}
+    metrics, baseline_artifact = {}, {"bins": {}, "base_props": {},
+                                             "cat_props": {}, "missing_rate": {},
+                                             "n_baseline": len(base)}
     print(f"{'feature':<24} {'PSI':>7} {'verdict':<11} {'KS-D':>7} {'KS-p':>9}  miss-drift")
     for col in RAW_FEATURE_COLS:
         b, p = base[col], prod[col]
@@ -110,12 +138,27 @@ def main():
         metrics[f"miss_base_{col}"] = mb
         metrics[f"miss_prod_{col}"] = mp
         miss_flag = "  <-- missing-rate moved" if abs(mp - mb) > 0.01 else ""
-        if col in FEATURE_COLS_NUM and b.nunique() > 12:
+        if col in FEATURE_COLS_NUM:
+            # numerics, binned two ways so the API can recompute with pure
+            # float comparison (no fragile cross-language string keys):
+            # continuous -> deciles; discrete (counts, corridor scores) ->
+            # midpoints between baseline uniques.
             bv, pv = b.dropna().values, p.dropna().values
-            bins = cut_bins(bv)
+            if _is_continuous(b):
+                bins = cut_bins(bv)
+            else:
+                bins = midpoint_bins(bv)
             v = psi_cont(bv, pv, bins) if bins is not None else 0.0
             d, pv_, _ = ks_check(bv, pv)
+            # The API's /drift endpoint recomputes this PSI from the log, so I
+            # store everything it needs: frozen edges AND baseline proportions
+            # (deduped/zero-inflated bins are not uniform — never assume 0.1).
             baseline_artifact["bins"][col] = bins.tolist() if bins is not None else None
+            if bins is not None:
+                e = np.histogram(bv, bins=bins)[0] / len(bv)
+                baseline_artifact["base_props"][col] = [round(float(x), 6) for x in e]
+            else:
+                baseline_artifact["base_props"][col] = None
             metrics[f"psi_{col}"] = v
             metrics[f"ks_D_{col}"] = d
             metrics[f"ks_p_{col}"] = pv_
@@ -123,6 +166,9 @@ def main():
         else:
             v = psi_cat(b.astype(object), p.astype(object))
             metrics[f"psi_{col}"] = v
+            eb = b.map(_cat_key).fillna("__missing__").value_counts(normalize=True)
+            baseline_artifact["cat_props"][col] = {
+                str(k): round(float(x), 6) for k, x in eb.items()}
             print(f"{col:<24} {v:>7.4f} {psi_verdict(v):<11} {'—':>7} {'—':>9}{miss_flag}")
 
     n_mod = sum(1 for c in RAW_FEATURE_COLS if 0.10 <= metrics[f"psi_{c}"] < 0.25)
@@ -130,6 +176,19 @@ def main():
     metrics["psi_n_moderate"] = n_mod
     metrics["psi_n_significant"] = n_sig
     print(f"\nsummary: {n_mod} moderate, {n_sig} significant (no triggers wired — logging only)")
+
+    def json_safe(x):
+        # Infinities are valid floats but INVALID json — serde_json rightly
+        # rejects them. I store null and the API reads it back as ∓infinity.
+        if isinstance(x, float) and (x == float("inf") or x == float("-inf")):
+            return None
+        if isinstance(x, list):
+            return [json_safe(v) for v in x]
+        if isinstance(x, dict):
+            return {k: json_safe(v) for k, v in x.items()}
+        return x
+
+    baseline_artifact = json_safe(baseline_artifact)
 
     with mlflow.start_run(run_name="finlora-drift-baseline") as run:
         mlflow.log_params({"baseline": "train split (80% temporal)",
