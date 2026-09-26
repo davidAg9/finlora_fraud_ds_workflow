@@ -40,9 +40,10 @@ I started from the raw cleaned columns and engineered 49 model inputs:
 
 One decision I want to be upfront about: tree models (Random Forest, XGBoost,
 CatBoost) don't strictly *need* one-hot encoding, but I baked the **same**
-preprocessor into all four candidates anyway. That way every model lives in one
-flat 49-feature space with one serving contract — a deliberate trade of a little
-elegance for a lot of operational sanity.
+  preprocessor into all four candidates anyway. That way every model lives in one
+  shared feature space with one serving contract — a deliberate trade of a little
+  elegance for a lot of operational sanity. (Since v11 the shipped RF uses the
+  convertible variant of that preprocessor: no log1p, no custom steps.)
 
 ---
 
@@ -110,13 +111,17 @@ receives. Corrected ranking (mean |SHAP|):
 
 - Every run is logged to **MLflow** (params, ROC/PR-AUC for all four models, the
   SHAP top-10, the model card). Registry name: `finlora-fraud-detector`.
-- The full pipeline — dtype normalisation, my derived flag, the preprocessor, the
-  estimator — is baked into **one** logged artifact, so loading
+- The full pipeline is baked into **one** logged artifact, so loading
   `models:/finlora-fraud-detector/<version>` gives you raw-row → probability with
   nothing to reimplement.
-- The same run also carries the **ONNX** copy (`onnx/model.onnx`). The Axum API
-  can't run sklearn, so it fetches that ONNX artifact from MLflow at startup and
-  serves it with `ort`. One source of truth, two consumers.
+- Since v11 the champion is an **RF-convertible** pipeline (median/constant
+  imputers, one-hot, forest — every op compiles) and the run carries a **full
+  raw→proba ONNX** (`onnx/fl_fraud_model_v0.1.0`). The Axum API fetches it from
+  MLflow at startup and takes **raw transaction JSON**: it forwards each field
+  into its named ONNX input and injects only the 2 ledger velocity counts.
+  No thresholds, no one-hot layout, no log1p anywhere outside Python — the
+  `parity_api.py` lock (28 rows incl. missing/unknown edges, 100% agreement)
+  proves the two sides match. One source of truth, two consumers.
 - Locally I use a SQLite store (`ds_workflow/mlruns/mlruns.db`). For DagsHub I set:
   `MLFLOW_TRACKING_URI=https://dagshub.com/<user>/<repo>.mlflow`,
   `MLFLOW_TRACKING_USERNAME=<dagshub-user>`,
@@ -134,6 +139,9 @@ receives. Corrected ranking (mean |SHAP|):
 
 ## Where this left me
 
-A registered, explainable, leak-checked model (currently version 8, Logistic),
-served two ways from one MLflow run: raw-row → probability for Python callers,
-ONNX for the Axum API — and a Streamlit dashboard still to build on top.
+A registered, explainable, leak-checked model (currently version 12,
+RF-convertible behind the `@best` alias — Logistic still holds the pure-score
+crown at 0.9652 vs 0.9628, and I took that −0.0024 trade deliberately for a
+fully self-contained artifact). Served two ways from one MLflow run: raw-row →
+probability for Python callers, full raw→proba ONNX for the Axum API — and a
+Streamlit dashboard still to build on top.

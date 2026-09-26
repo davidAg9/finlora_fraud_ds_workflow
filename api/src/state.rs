@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use ort::session::Session;
 
 use crate::ledger::SimulationLedger;
-use crate::model::schema::{CustomerDefaults, FeatureIndices};
+use crate::model::schema::CustomerDefaults;
 
 // Everything every request handler needs, shared safely across threads.
 // I wrap the ONNX session in a Mutex because ort sessions aren't thread-safe;
@@ -11,8 +11,6 @@ use crate::model::schema::{CustomerDefaults, FeatureIndices};
 #[derive(Clone)]
 pub struct AppState {
     pub model: Arc<Mutex<Session>>,
-    /// Slot positions + feature count, resolved from the schema JSON at boot.
-    pub features: Arc<FeatureIndices>,
     /// In-memory simulation ledger: counts each "make transaction" click and
     /// derives txn_velocity_1h/24h for that customer on the next click.
     pub ledger: Arc<SimulationLedger>,

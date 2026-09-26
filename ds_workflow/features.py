@@ -133,6 +133,50 @@ def make_preprocessor() -> tuple[ColumnTransformer, list[str]]:
     return preprocessor, list(ALL_FEATURE_COLS)
 
 
+def normalize_for_serving(frame):
+    """Training-side hygiene for tree pipelines that must convert to ONNX.
+
+    I map missing categories to "" (the only missing-marker skl2onnx's string
+    imputer accepts) and bools to float64 (so fitted and inference dtypes
+    agree). This runs in Python at train time only — at inference the ONNX
+    graph takes typed tensors, so there is no pandas left to disagree with.
+    """
+    out = prepare_features(frame.copy())
+    for c in FEATURE_COLS_CAT:
+        if c in out.columns:
+            out[c] = out[c].astype(object).where(out[c].notna(), "")
+    for c in FEATURE_COLS_BOOL:
+        if c in out.columns:
+            out[c] = out[c].astype("float64")
+    return out
+
+
+def make_convertible_pipeline() -> tuple[ColumnTransformer, list]:
+    """Preprocessing with ONLY skl2onnx-convertible ops (no log1p, no custom
+    code, no scaler — trees need neither).
+
+    I verified each piece compiles: median/constant imputers, one-hot, plain
+    passthrough. The "" sentinel for missing categories is the one skl2onnx
+    accepts (None is rejected). Returns (preprocessor, raw input columns).
+    """
+    cat_pipe = Pipeline(
+        [
+            ("imp", SimpleImputer(strategy="constant", fill_value="__missing__",
+                                  missing_values="")),
+            ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+        ]
+    )
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", SimpleImputer(strategy="median"), FEATURE_COLS_NUM),
+            ("cat", cat_pipe, FEATURE_COLS_CAT),
+            ("bool", "passthrough", FEATURE_COLS_BOOL),
+        ],
+        sparse_threshold=0,
+    )
+    return preprocessor, list(RAW_FEATURE_COLS)
+
+
 def make_full_pipeline(estimator_steps) -> Pipeline:
     """End-to-end pipeline: raw cleaned row -> probability.
 

@@ -20,21 +20,6 @@ fn load_session(
     Ok(Session::builder()?.commit_from_file(&staged)?)
 }
 
-fn load_feature_indices() -> Result<model::schema::FeatureIndices, Box<dyn std::error::Error>> {
-    // Slot positions come from the frozen schema, not from constants in code —
-    // so a Python retrain that adds features needs no Rust changes.
-    let path = std::env::var("SCHEMA_PATH").unwrap_or_else(|_| {
-        "../ds_workflow/model/finlora_feature_schema.json".to_string()
-    });
-    println!("Loading feature schema from {path}");
-    let idx = model::schema::FeatureIndices::load(&path).map_err(|e| e.to_string())?;
-    println!(
-        "Schema: {} features (velocity_1h @ {}, velocity_24h @ {}, velocity_spike @ {})",
-        idx.n_features, idx.velocity_1h, idx.velocity_24h, idx.velocity_spike
-    );
-    Ok(idx)
-}
-
 fn load_customers() -> Result<Vec<model::schema::CustomerDefaults>, Box<dyn std::error::Error>> {
     let path =
         std::env::var("CUSTOMERS_PATH").unwrap_or_else(|_| "../ds_workflow/data_assets/customers_defaults.json".to_string());
@@ -55,12 +40,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| format!("model load failed: {e}"))?;
     let session = load_session(&resolved.bytes, &resolved.description)?;
-    let feature_indices = load_feature_indices()?;
     let customers = load_customers()?;
 
     let state = AppState {
         model: Arc::new(Mutex::new(session)),
-        features: Arc::new(feature_indices),
         ledger: Arc::new(ledger::SimulationLedger::new()),
         customers: Arc::new(customers),
     };

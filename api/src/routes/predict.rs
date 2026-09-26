@@ -2,7 +2,9 @@ use axum::{extract::State, http::StatusCode, Json};
 use ort::value::Tensor;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::model::schema::{ApiError, PredictionResponse, TransactionPayload};
+use crate::model::schema::{
+    ApiError, PredictionResponse, TransactionData, BOOL_COLS, CAT_COLS, NUM_COLS,
+};
 use crate::state::AppState;
 
 // Cut-offs I share with the modelling notebook: auto-flag fraud at 0.80,
@@ -17,59 +19,93 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+fn float_tensor(v: f32) -> Result<Tensor<f32>, String> {
+    // Rank 2 ([1, 1]): the graph declares every input as [batch, 1].
+    Tensor::from_array(([1_usize, 1_usize], vec![v].into_boxed_slice()))
+        .map_err(|e| e.to_string())
+}
+
+fn string_tensor(s: String) -> Result<Tensor<String>, String> {
+    Tensor::from_string_array(([1_usize, 1_usize], &*vec![s])).map_err(|e| e.to_string())
+}
+
 pub async fn prediction_handler(
     State(state): State<AppState>,
-    Json(payload): Json<TransactionPayload>,
+    Json(payload): Json<TransactionData>,
 ) -> Result<Json<PredictionResponse>, (StatusCode, Json<ApiError>)> {
-    let n = state.features.n_features;
-    if payload.features.len() != n {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError::new(format!(
-                "expected {} features, got {}",
-                n,
-                payload.features.len()
-            ))),
-        ));
-    }
-
-    let mut features = payload.features;
-
-    // Simulation velocity: when a customer_id is present the ledger owns every
-    // velocity-derived slot. I count that customer's stored sim txns within the
-    // last hour / last day, overwrite the client-sent placeholders, then record
-    // the click so the next one sees an updated velocity.
-    // Three slots, three encodings — all matching how Python engineered them:
-    // - num_log__txn_velocity_1h/24h hold log1p(count), so I inject ln(1+v);
-    // - bool__velocity_spike is the >=3/hr flag, so I inject 1.0/0.0 with the
-    //   same cut the model trained on. The client can't compute this one: it
-    //   only ever sees velocity 0 (its slots are placeholders), so if I didn't
-    //   derive it here the model would never fire on bursts. My mistake in the
-    //   first version — fixed.
+    // Stateful path: a customer_id means "simulate". I count that customer's
+    // stored clicks inside the 1h/24h windows and feed the COUNTS as the two
+    // velocity inputs (the forest splits them directly — no thresholds, no
+    // log scaling on my side). Only then do I record this click, so a
+    // transaction never counts toward its own velocity (no lookahead).
+    // Stateless path: no customer_id, no ledger — sent values pass through
+    // (NaN flows to the ONNX median-imputer, "" to the __missing__ bucket,
+    // exactly like training).
     let reference_ms = payload.timestamp_ms.unwrap_or_else(now_millis);
-    let (velocity_1h, velocity_24h) = match &payload.customer_id {
+    let (ledger_counts, velocity_1h, velocity_24h) = match &payload.customer_id {
         Some(cid) => {
             let (v1, v24) = state.ledger.velocities(cid, reference_ms);
-            features[state.features.velocity_1h] = (1.0 + v1 as f32).ln();
-            features[state.features.velocity_24h] = (1.0 + v24 as f32).ln();
-            features[state.features.velocity_spike] = if v1 >= 3 { 1.0 } else { 0.0 };
             state.ledger.record(cid, reference_ms);
-            (v1, v24)
+            (Some((v1, v24)), v1, v24)
         }
-        None => (0, 0),
+        None => (None, 0, 0),
     };
 
-    let shape = [1_usize, n];
-    let input_tensor = Tensor::from_array((shape, features.into_boxed_slice()))
-        .map_err(|e| internal_error(e.to_string()))?;
+    let num = |col: &str| -> f32 {
+        match (col, ledger_counts) {
+            ("txn_velocity_1h", Some((v1, _))) => v1 as f32,
+            ("txn_velocity_24h", Some((_, v24))) => v24 as f32,
+            _ => payload.num(col),
+        }
+    };
+
+    let mut float_tensors = Vec::with_capacity(NUM_COLS.len() + BOOL_COLS.len());
+    for col in NUM_COLS.iter().chain(BOOL_COLS.iter()) {
+        let v = if BOOL_COLS.contains(col) {
+            payload.flag(col)
+        } else {
+            num(col)
+        };
+        float_tensors.push(float_tensor(v).map_err(internal_error)?);
+    }
+    let mut string_tensors = Vec::with_capacity(CAT_COLS.len());
+    for col in CAT_COLS.iter() {
+        string_tensors.push(string_tensor(payload.cat(col)).map_err(internal_error)?);
+    }
 
     let probability = {
         let mut session = state
             .model
             .lock()
             .map_err(|_| internal_error("session lock poisoned".to_string()))?;
+        // Named inputs, resolved by the graph itself — order is irrelevant,
+        // names must match export_onnx.py's initial_types.
+        let mut ft = float_tensors.into_iter();
+        let mut st = string_tensors.into_iter();
         let outputs = session
-            .run(ort::inputs![input_tensor])
+            .run(ort::inputs![
+                "amount_usd" => ft.next().unwrap(),
+                "fee" => ft.next().unwrap(),
+                "account_age_days" => ft.next().unwrap(),
+                "ip_risk_score" => ft.next().unwrap(),
+                "device_trust_score" => ft.next().unwrap(),
+                "chargeback_history_count" => ft.next().unwrap(),
+                "risk_score_internal" => ft.next().unwrap(),
+                "txn_velocity_1h" => ft.next().unwrap(),
+                "txn_velocity_24h" => ft.next().unwrap(),
+                "corridor_risk" => ft.next().unwrap(),
+                "new_device" => ft.next().unwrap(),
+                "location_mismatch" => ft.next().unwrap(),
+                "corrupt_record" => ft.next().unwrap(),
+                "timestamp_missing" => ft.next().unwrap(),
+                "record_incomplete" => ft.next().unwrap(),
+                "kyc_tier" => st.next().unwrap(),
+                "channel" => st.next().unwrap(),
+                "home_country" => st.next().unwrap(),
+                "ip_country" => st.next().unwrap(),
+                "source_currency" => st.next().unwrap(),
+                "dest_currency" => st.next().unwrap()
+            ])
             .map_err(|e| internal_error(e.to_string()))?;
         let output = outputs
             .get("probabilities")
