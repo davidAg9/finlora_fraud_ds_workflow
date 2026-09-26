@@ -1,6 +1,6 @@
 outs:
-- md5: 79f8921f23a642e4f5721cbf0427ba31.dir
-  size: 7788486
+- md5: f862e03da036b76362fe017e1cfe541e.dir
+  size: 7788485
   nfiles: 4
   hash: md5
   path: data_assets

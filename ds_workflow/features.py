@@ -6,9 +6,12 @@ and the Streamlit app can never drift apart. Three layers, applied in order:
 1. `derive_features(df)` — my six evidence-backed flags (amount_high_flag and the
    five risk flags). Each cut was tested standalone before I kept it; thresholds
    are documented on FEATURE_COLS_DERIVED.
-2. `prepare_features(df)` — dtype cleanup. sklearn can't read pandas 3 nullable
-   types (pd.NA is neither a float nan nor a string, so encoders crash). I convert
-   once, the same way at train time and at prediction time.
+2. `prepare_features(df)` — dtype guard. My cleaning step saves numpy-backed
+   dtypes (plain float64, object-with-None, bool), which sklearn reads natively —
+   I fixed that upstream so this function is mostly a safety net today. It still
+   runs identically at train time and prediction time, so a stray nullable frame
+   can never silently poison the model: text gaps become None (the __missing__
+   bucket), numerics become float64.
 3. `make_preprocessor()` — the fitted math: log1p on skewed numbers, one-hot
    categories (with an explicit "__missing__" bucket so the model learns that
    "unknown" is itself a signal), flags passed through untouched.
