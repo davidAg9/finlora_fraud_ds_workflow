@@ -50,6 +50,24 @@ cd ../ds_workflow && pixi run streamlit run ../app_streamlit/app.py
 DagsHub hosts the mirror: experiments, `finlora-fraud-detector` v1–v5 (← local v9/10/11/12/15, `@best` → v5), ONNX twins, per-version cards, SHAP artifacts, P/R/F1 @0.80, drift runs, DVC data.
 
 ```bash
-# Docker (API + ONNX; model + data mounted, never baked)
+# Docker (model + data mounted, never baked)
 docker build -t finlora-api ./api
+docker run -p 8000:8000 \
+  -e MODEL_URI="models:/finlora-fraud-detector@best" \
+  -e MLFLOW_TRACKING_URI="https://dagshub.com/<user>/<repo>.mlflow" \
+  -e MLFLOW_TRACKING_USERNAME="<user>" \
+  -e MLFLOW_TRACKING_PASSWORD="<token>" \
+  -e CUSTOMERS_PATH="/data/customers_defaults.json" \
+  -e DRIFT_BASELINE_PATH="/model/drift_baseline.json" \
+  -e TXN_LOG_PATH="/tmp/txn_log.jsonl" \
+  -v ./ds_workflow/data_assets:/data:ro \
+  -v ./ds_workflow/model:/model:ro \
+  finlora-api
 ```
+
+Two things I learned the hard way, baked into `api/Dockerfile`: trixie, not
+bookworm (ort's prebuilt C++ needs GCC-13+ symbols at link *and* load time),
+and a non-root `appuser` runtime. Note `TXN_LOG_PATH` points at writable
+storage — the request log can never live on a read-only mount (I set
+`/tmp/...` above for exactly that reason; the API fails fast at boot if the
+path isn't writable).
